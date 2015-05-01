@@ -81,6 +81,33 @@ private[cassandra] class CassandraCatalog(cc: CassandraSQLContext) extends Catal
     unregisterTable(catalystTableIdentFrom(tableIdent))
   }
 
+  /** Unregister database from local cache and metastore. */
+  def unregisterDatabase(database: String, cluster: Option[String]): Unit = {
+    unregisterDatabaseFromCache(database, cluster)
+    synchronized {
+      metaStore.removeDatabase(database, cluster)
+    }
+  }
+
+  private def unregisterDatabaseFromCache(database: String, cluster: Option[String]): Unit = {
+    val tables = getTables(Option(database), cluster)
+    val dbAndCluster = if (cluster.nonEmpty) Seq(cluster.get, database) else Seq(database)
+    for (table <- tables) {
+      val tableIdentifier = dbAndCluster ++ Seq(table)
+      cachedDataSourceTables.invalidate(tableIdentifier)
+    }
+  }
+  /** Unregister cluster from local cache and metastore. */
+  def unregisterCluster(cluster: String): Unit = {
+    val databases = getDatabases(Option(cluster))
+    for (database <- databases) {
+      unregisterDatabaseFromCache(database, Option(cluster))
+    }
+    synchronized {
+      metaStore.removeCluster(cluster)
+    }
+  }
+
   /** Unregister all tables from local cache and metastore. */
   override def unregisterAllTables(): Unit = {
     cachedDataSourceTables.invalidateAll()
@@ -117,6 +144,26 @@ private[cassandra] class CassandraCatalog(cc: CassandraSQLContext) extends Catal
   /** Get all tables for given database name and cluster */
   def getTables(databaseName: Option[String], cluster: Option[String] = None): Seq[(String, Boolean)] = synchronized {
     metaStore.getAllTables(databaseName, cluster)
+  }
+
+  /** Get all tables for given database name and cluster */
+  def getDatabases(cluster: Option[String] = None): Seq[String] = synchronized {
+    metaStore.getAllDatabases(cluster)
+  }
+
+  /** Get all tables for given database name and cluster */
+  def getClusters(): Seq[String] = synchronized {
+    metaStore.getAllClusters()
+  }
+
+  /** Create a database in metastore */
+  def createDatabase(database: String, cluster: Option[String]): Unit = synchronized {
+    metaStore.storeDatabase(database, cluster)
+  }
+
+  /** Create a cluster in metastore */
+  def createCluster(cluster: String): Unit = synchronized {
+    metaStore.storeCluster(cluster)
   }
 
   /** Refresh CassandraContext schema cache, then refresh table in local cache */

@@ -148,3 +148,78 @@ private[cassandra] case class DropTable(
     Seq.empty[Row]
   }
 }
+
+private[cassandra] case class UseDatabase(database: String) extends RunnableCommand {
+  override def run(sqlContext: SQLContext) = {
+    val cc = sqlContext.asInstanceOf[CassandraSQLContext]
+    cc.setKeyspace(database)
+    Seq.empty[Row]
+  }
+}
+
+private[cassandra] case class ShowTables(keyspaceIdentifier: Seq[String]) extends RunnableCommand {
+  override def run(sqlContext: SQLContext) = {
+    val cc = sqlContext.asInstanceOf[CassandraSQLContext]
+    val id = keyspaceIdentifier.reverse.lift
+    val clusterName = id(1).getOrElse(cc.getDefaultCluster)
+    val keyspaceName = id(0).getOrElse(cc.getKeyspace)
+    val tables = cc.getTables(Option(keyspaceName), Option(clusterName))
+    tables.map(_._1).map(name => Row.fromSeq(Seq(name)))
+  }
+}
+
+private[cassandra] case class ShowDatabases(clusterIdentifier: Seq[String]) extends RunnableCommand {
+  override def run(sqlContext: SQLContext) = {
+    val cc = sqlContext.asInstanceOf[CassandraSQLContext]
+    val id = clusterIdentifier.reverse.lift
+    val clusterName = id(0).getOrElse(cc.getDefaultCluster)
+    val databases = cc.getDatabases(Option(clusterName))
+    databases.map(name => Row.fromSeq(Seq(name)))
+  }
+}
+
+private[cassandra] case class ShowClusters() extends RunnableCommand {
+  override def run(sqlContext: SQLContext) = {
+    val cc = sqlContext.asInstanceOf[CassandraSQLContext]
+    val clusters = cc.getClusters()
+    clusters.map(name => Row.fromSeq(Seq(name)))
+  }
+}
+
+private[cassandra] case class CreateDatabase(keyspaceIdentifier: Seq[String]) extends RunnableCommand {
+  override def run(sqlContext: SQLContext) = {
+    val cc = sqlContext.asInstanceOf[CassandraSQLContext]
+    val id = keyspaceIdentifier.reverse.lift
+    val clusterName = id(1).getOrElse(cc.getDefaultCluster)
+    val keyspaceName = id(0).getOrElse(cc.getKeyspace)
+    cc.createDatabase(keyspaceName, Option(clusterName))
+    Seq.empty[Row]
+  }
+}
+
+private[cassandra] case class CreateCluster(cluster: String) extends RunnableCommand {
+  override def run(sqlContext: SQLContext) = {
+    val cc = sqlContext.asInstanceOf[CassandraSQLContext]
+    cc.createCluster(cluster)
+    Seq.empty[Row]
+  }
+}
+
+private[cassandra] case class DropDatabase(keyspaceIdentifier: Seq[String]) extends RunnableCommand {
+  override def run(sqlContext: SQLContext) = {
+    val cc = sqlContext.asInstanceOf[CassandraSQLContext]
+    val id = keyspaceIdentifier.reverse.lift
+    val clusterName = id(1).getOrElse(cc.getDefaultCluster)
+    val keyspaceName = id(0).getOrElse(cc.getKeyspace)
+    cc.unregisterDatabase(keyspaceName, Option(clusterName))
+    Seq.empty[Row]
+  }
+}
+
+private[cassandra] case class DropCluster(cluster: String) extends RunnableCommand {
+  override def run(sqlContext: SQLContext) = {
+    val cc = sqlContext.asInstanceOf[CassandraSQLContext]
+    cc.createCluster(cluster)
+    Seq.empty[Row]
+  }
+}

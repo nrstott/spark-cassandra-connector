@@ -452,16 +452,45 @@ class CassandraSQLSpec extends SparkCassandraITFlatSpecBase {
     cc.sql("DESCRIBE EXTENDED sql_test.test1").collect() should have length 8
   }
 
-  it should "drop a table" in {
-    //DROP TABLE IF EXISTS test1
+  it should "show clusters" in {
+    cc.sql("SHOW CLUSTERS").collect() should have length 1
   }
 
-  it should "show a database" in {
-    //SHOW sql_test
+  it should "show databases" in {
+    cc.sql("SHOW DATABASES").collect() should have length 2
+    cc.sql("SHOW DATABASES IN default").collect() should have length 2
+  }
+
+  it should "show tables" in {
+    cc.sql("SHOW TABLES").collect() should have length 12
+    cc.sql("SHOW TABLES IN sql_test").collect() should have length 12
+    cc.sql("SHOW TABLES IN default.sql_test").collect() should have length 12
   }
 
   it should "use a database" in {
-    //USE sql_test
+    cc.sql("USE keyspace");
+    cc.getKeyspace should equal("keyspace")
+    cc.sql("USE sql_test");
+    cc.getKeyspace should equal("sql_test")
+  }
+
+  it should "create a database" in {
+    cc.sql("CREATE DATABASE db_test");
+    cc.sql("CREATE DATABASE cluster_test.db_test");
+  }
+
+  it should "drop a database" in {
+  }
+
+  it should "create a cluster" in {
+    cc.sql("CREATE CLUSTER cluster_test");
+  }
+
+  it should "drop a cluster" in {
+  }
+
+  it should "drop a table" in {
+    //DROP TABLE IF EXISTS test1
   }
 
 }

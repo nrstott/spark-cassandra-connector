@@ -1,6 +1,7 @@
 package org.apache.spark.sql.cassandra
 
 
+import org.apache.spark.Logging
 import org.apache.spark.sql.catalyst.analysis.NoSuchTableException
 
 import scala.collection.mutable.ListBuffer
@@ -20,58 +21,51 @@ trait MetaStore {
    * Get a table from metastore. If it's not found in metastore, then look
    * up Cassandra tables to get the source table.
    *
-   * @param tableIdent
-   * @return
    */
   def getTable(tableIdent: TableIdent) : LogicalPlan
 
-  /**
-   * Get a table from metastore. If it's not found in metastore, return None
-   *
-   * @param tableIdent
-   * @return
-   */
+  /** Get a table from metastore. If it's not found in metastore, return None */
   def getTableFromMetastore(tableIdent: TableIdent) : Option[LogicalPlan]
 
   /**
    * Get all table names for a keyspace. If keyspace is empty, get all tables from
    * all keyspaces.
-   * @param keyspace
-   * @return
    */
   def getAllTables(keyspace: Option[String], cluster: Option[String] = None) : Seq[(String, Boolean)]
 
-  /**
-   * Only Store customized tables meta data in metastore
-   *
-   * @param tableIdentifier
-   * @param source
-   * @param schema
-   * @param options
-   */
+
+  /** Return all database names */
+  def getAllDatabases(cluster: Option[String] = None) : Seq[String]
+
+  /** Return all cluster names */
+  def getAllClusters() : Seq[String]
+
+  /** Only Store customized tables meta data in metastore */
   def storeTable(
       tableIdentifier: TableIdent,
       source: String,
       schema: Option[StructType],
       options: Map[String, String]) : Unit
 
+  /** create a database in metastore */
+  def storeDatabase(database: String, cluster: Option[String]) : Unit
 
-  /**
-   * Remove table from metastore
-   *
-   * @param tableIdent
-   */
+  /** create a cluster in metastore */
+  def storeCluster(cluster: String) : Unit
+
+  /** Remove table from metastore */
   def removeTable(tableIdent: TableIdent) : Unit
 
+  /** Remove a database from metastore */
+  def removeDatabase(database: String, cluster: Option[String]) : Unit
 
-  /**
-   * Remove all tables from metastore
-   */
+  /** Remove a cluster from metastore */
+  def removeCluster(cluster: String) : Unit
+
+  /** Remove all tables from metastore */
   def removeAllTables() : Unit
 
-  /**
-   * Create metastore keyspace and table in Cassandra
-   */
+  /** Create metastore keyspace and table in Cassandra */
   def init() : Unit
 
 }
@@ -80,12 +74,12 @@ trait MetaStore {
  * Store only customized tables or other data source tables. Cassandra data source tables
  * are directly lookup from Cassandra tables
  */
-class DataSourceMetaStore(sqlContext: SQLContext) extends MetaStore {
+class DataSourceMetaStore(sqlContext: SQLContext) extends MetaStore with Logging {
 
   import DataSourceMetaStore._
   import CassandraDefaultSource._
 
-  private val metaStoreConn = new CassandraConnector(sqlContext.getCassandraConnConf(Option(getMetaStoreCluster())))
+  private val metaStoreConn = new CassandraConnector(sqlContext.getCassandraConnConf(getMetaStoreCluster()))
 
   private val CreateMetaStoreKeyspaceQuery =
     s"""
@@ -124,11 +118,12 @@ class DataSourceMetaStore(sqlContext: SQLContext) extends MetaStore {
   }
 
   override def getAllTables(keyspace: Option[String], cluster: Option[String] = None): Seq[(String, Boolean)] = {
+    val clusterName = cluster.getOrElse(sqlContext.getDefaultCluster)
     val selectQuery =
       s"""
       |SELECT table_name, keyspace_name
       |From ${getMetaStoreKeyspace()}.${getMetaStoreTable()}
-      |WHERE cluster_name = '${cluster.getOrElse(sqlContext.getDefaultCluster)}'
+      |WHERE cluster_name = '$clusterName'
     """.stripMargin.replaceAll("\n", " ")
     val names = ListBuffer[(String, Boolean)]()
     // Add source tables from metastore
@@ -138,24 +133,95 @@ class DataSourceMetaStore(sqlContext: SQLContext) extends MetaStore {
         while (result.hasNext) {
           val row: Row = result.next()
           val tableName = row.getString(0)
-          if (keyspace.nonEmpty) {
+          if (tableName != TempDatabaseOrTableName) {
             val ks = row.getString(1)
-            if (ks == keyspace.get)
-              names += ((tableName, false))
-          } else {
-            names += ((tableName, false))
+            if (keyspace.nonEmpty) {
+              if (ks == keyspace.get)
+                names += ((tableName, false))
+            } else {
+              if (ks != TempDatabaseOrTableName)
+                names += ((tableName, false))
+            }
           }
         }
         names
     }
 
     // Add source tables from Cassandra tables
-    val conn = new CassandraConnector(sqlContext.getCassandraConnConf(Option(sqlContext.getDefaultCluster)))
+    val conn = new CassandraConnector(sqlContext.getCassandraConnConf(clusterName))
     if (keyspace.nonEmpty) {
       val ksDef = Schema.fromCassandra(conn).keyspaceByName.get(keyspace.get)
       names ++= ksDef.map(_.tableByName.keySet).getOrElse(Set.empty).map((name => (name, false)))
     }
-    names
+     names.toList
+  }
+
+  override def getAllDatabases(cluster: Option[String] = None): Seq[String] = {
+    val clusterName = cluster.getOrElse(sqlContext.getDefaultCluster)
+    val selectQuery =
+      s"""
+      |SELECT keyspace_name
+      |From ${getMetaStoreKeyspace()}.${getMetaStoreTable()}
+      |WHERE cluster_name = '$clusterName'
+    """.stripMargin.replaceAll("\n", " ")
+    val databaseNames = getAllDatabasesFromMetastore(cluster).toSet
+
+    // Add source tables from Cassandra tables
+    val conn = new CassandraConnector(sqlContext.getCassandraConnConf(clusterName))
+    val keyspaces = Schema.fromCassandra(conn).keyspaceByName.keySet
+    (databaseNames ++ keyspaces -- SystemKeyspaces).toSeq
+  }
+
+  def getAllDatabasesFromMetastore(cluster: Option[String] = None): Seq[String] = {
+    val clusterName = cluster.getOrElse(sqlContext.getDefaultCluster)
+    val selectQuery =
+      s"""
+      |SELECT keyspace_name
+      |From ${getMetaStoreKeyspace()}.${getMetaStoreTable()}
+      |WHERE cluster_name = '$clusterName'
+    """.stripMargin.replaceAll("\n", " ")
+    val names = ListBuffer[String]()
+    // Add source tables from metastore
+    metaStoreConn.withSessionDo {
+      session =>
+        val result = session.execute(selectQuery).iterator()
+        while (result.hasNext) {
+          val row: Row = result.next()
+          val keyspaceName = row.getString(0)
+          if (keyspaceName != TempDatabaseOrTableName) {
+            names += keyspaceName
+          }
+        }
+        names
+    }
+    names.toList
+  }
+
+  override def getAllClusters(): Seq[String] = {
+    val names = getAllClustersFromMetastore
+    (names ++ Seq(sqlContext.getDefaultCluster)).distinct
+  }
+
+  def getAllClustersFromMetastore: Seq[String] = {
+    val selectQuery =
+      s"""
+      |SELECT cluster_name
+      |From ${getMetaStoreKeyspace()}.${getMetaStoreTable()}
+    """.stripMargin.replaceAll("\n", " ")
+    val names = ListBuffer[String]()
+    // Add source tables from metastore
+    metaStoreConn.withSessionDo {
+      session =>
+        val result = session.execute(selectQuery).iterator()
+        while (result.hasNext) {
+          val row: Row = result.next()
+          val clusterName = row.getString(0)
+          names += clusterName
+        }
+        names
+    }
+
+    names.distinct.toList
   }
 
   /** Store a tale with the creation meta data */
@@ -166,13 +232,14 @@ class DataSourceMetaStore(sqlContext: SQLContext) extends MetaStore {
       options: Map[String, String]): Unit = {
     import collection.JavaConversions._
 
+    val cluster = tableIdent.cluster.getOrElse(sqlContext.getDefaultCluster)
     if (schema.nonEmpty) {
       metaStoreConn.withSessionDo {
         session =>
           val preparedStatement: PreparedStatement = session.prepare(InsertIntoMetaStoreQuery)
           session.execute(
             preparedStatement.bind(
-              tableIdent.cluster.getOrElse(sqlContext.getDefaultCluster),
+              cluster,
               tableIdent.keyspace,
               tableIdent.table,
               source,
@@ -185,7 +252,7 @@ class DataSourceMetaStore(sqlContext: SQLContext) extends MetaStore {
           val preparedStatement: PreparedStatement = session.prepare(InsertIntoMetaStoreWithoutSchemaQuery)
           session.execute(
             preparedStatement.bind(
-              tableIdent.cluster.getOrElse(sqlContext.getDefaultCluster),
+              cluster,
               tableIdent.keyspace,
               tableIdent.table,
               source,
@@ -193,6 +260,49 @@ class DataSourceMetaStore(sqlContext: SQLContext) extends MetaStore {
       }
     }
 
+    val tempTableIdent = TableIdent(TempDatabaseOrTableName, TempDatabaseOrTableName, Option(cluster))
+    removeTable(tempTableIdent)
+  }
+
+  override def storeDatabase(database: String, cluster: Option[String]) : Unit = {
+    val databaseNames = getAllDatabasesFromMetastore(cluster).toSet
+    if (databaseNames.contains(database))
+      return
+
+    val insertQuery =
+      s"""
+      |INSERT INTO ${getMetaStoreKeyspace()}.${getMetaStoreTable()}
+      | (cluster_name, keyspace_name, table_name)
+      | values (?, ?, ?)
+    """.stripMargin.replaceAll("\n", " ")
+
+    val clusterName = cluster.getOrElse(sqlContext.getDefaultCluster)
+    metaStoreConn.withSessionDo {
+      session =>
+        val preparedStatement: PreparedStatement = session.prepare(insertQuery)
+        session.execute(
+          preparedStatement.bind(clusterName, database, TempDatabaseOrTableName))
+    }
+  }
+
+  override def storeCluster(cluster: String) : Unit = {
+    val clusterNames = getAllClustersFromMetastore.toSet
+    if (clusterNames.contains(cluster))
+      return
+
+    val insertQuery =
+      s"""
+      |INSERT INTO ${getMetaStoreKeyspace()}.${getMetaStoreTable()}
+      | (cluster_name, keyspace_name, table_name)
+      | values (?, ?, ?)
+    """.stripMargin.replaceAll("\n", " ")
+
+    metaStoreConn.withSessionDo {
+      session =>
+        val preparedStatement: PreparedStatement = session.prepare(insertQuery)
+        session.execute(
+          preparedStatement.bind(cluster, TempDatabaseOrTableName, TempDatabaseOrTableName))
+    }
   }
 
   override def removeTable(tableIdent: TableIdent) : Unit = {
@@ -208,6 +318,10 @@ class DataSourceMetaStore(sqlContext: SQLContext) extends MetaStore {
       session => session.execute(deleteQuery)
     }
   }
+
+  override def removeDatabase(database: String, cluster: Option[String]) : Unit = ???
+
+  override def removeCluster(cluster: String) : Unit = ???
 
   override def removeAllTables() : Unit = {
     metaStoreConn.withSessionDo {
@@ -265,7 +379,8 @@ class DataSourceMetaStore(sqlContext: SQLContext) extends MetaStore {
 
   /** Check whether table is in Cassandra */
   private def findTableFromCassandra(tableIdent: TableIdent) : Unit = {
-    val conn = new CassandraConnector(sqlContext.getCassandraConnConf(tableIdent.cluster))
+    val clusterName = tableIdent.cluster.getOrElse(sqlContext.getDefaultCluster)
+    val conn = new CassandraConnector(sqlContext.getCassandraConnConf(clusterName))
     //Throw NoSuchElementException if can't find table in C*
     try {
       Schema.fromCassandra(conn).keyspaceByName(tableIdent.keyspace).tableByName(tableIdent.table)
@@ -315,4 +430,7 @@ object DataSourceMetaStore {
     CassandraDataSourceMetaStoreTableNameProperty,
     CassandraDataSourceToLoadClustersProperty
   )
+
+  val SystemKeyspaces = Set("system", "system_traces", DefaultCassandraDataSourceMetaStoreKeyspaceName)
+  val TempDatabaseOrTableName = "TO_BE_DELETED"
 }

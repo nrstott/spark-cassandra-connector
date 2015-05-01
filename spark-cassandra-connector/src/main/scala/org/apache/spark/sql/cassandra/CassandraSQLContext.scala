@@ -2,7 +2,7 @@ package org.apache.spark.sql.cassandra
 
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
-import org.apache.spark.sql.sources.DataSourceStrategy
+import org.apache.spark.sql.sources.{DDLParser, DataSourceStrategy}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{DataFrame, Strategy, SQLContext}
 
@@ -49,7 +49,14 @@ class CassandraSQLContext(sc: SparkContext) extends SQLContext(sc) {
     throw new IllegalStateException("Default keyspace not set. Please call CassandraSQLContext#setKeyspace."))
 
   /** Executes SQL query against Cassandra and returns DataFrame representing the result. */
-  def cassandraSql(cassandraQuery: String): DataFrame = new DataFrame(this, super.parseSql(cassandraQuery))
+  def cassandraSql(cassandraQuery: String): DataFrame = new DataFrame(this, parseSql(cassandraQuery))
+
+  @transient
+  protected[sql] val cassandraDdlParser = new CassandraDDLParser(sqlParser.apply(_))
+
+  override protected[sql] def parseSql(sql: String): LogicalPlan = {
+    cassandraDdlParser(sql, false).getOrElse(ddlParser(sql, false).getOrElse(sqlParser(sql)))
+  }
 
   /** Delegates to [[cassandraSql]] */
   override def sql(cassandraQuery: String): DataFrame = cassandraSql(cassandraQuery)
@@ -86,6 +93,15 @@ class CassandraSQLContext(sc: SparkContext) extends SQLContext(sc) {
     catalog.getTables(databaseName, cluster)
 
   /**
+   * Get all databases for given cluster name.
+   * database is equivalent to keyspace
+   */
+  def getDatabases(cluster: Option[String] = None): Seq[String] = catalog.getDatabases(cluster)
+
+  /** Get all clusters */
+  def getClusters(): Seq[String] = catalog.getClusters()
+
+  /**
    * Only register table to local cache. To register table in metastore, use
    * registerTable(tableIdent, source, schema, options) method
    */
@@ -114,6 +130,20 @@ class CassandraSQLContext(sc: SparkContext) extends SQLContext(sc) {
 
   /** Check whether table is stored in metastore */
   def tableExistsInMetastore(tableIdent: TableIdent): Boolean = catalog.tableExistsInMetastore(tableIdent)
+
+  /** Create a database in metastore */
+  def createDatabase(database: String, cluster: Option[String]): Unit =
+    catalog.createDatabase(database, cluster)
+
+  /** Create a cluster in metastore */
+  def createCluster(cluster: String): Unit = catalog.createCluster(cluster)
+
+  /** Unregister database from local cache and metastore. */
+  def unregisterDatabase(database: String, cluster: Option[String]): Unit =
+    catalog.unregisterDatabase(database, cluster)
+
+  /** Unregister cluster from local cache and metastore. */
+  def unregisterCluster(cluster: String): Unit = catalog.unregisterCluster(cluster)
 }
 
 object CassandraSQLContext {
