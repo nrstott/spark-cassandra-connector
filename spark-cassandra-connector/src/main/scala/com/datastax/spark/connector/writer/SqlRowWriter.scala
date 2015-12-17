@@ -29,7 +29,7 @@ class SqlRowWriter(val table: TableDef, val selectedColumns: IndexedSeq[ColumnRe
           case bigDecimal: java.math.BigDecimal => bigDecimal.toBigInteger
           case bigInteger: java.math.BigInteger => bigInteger
         }
-        case UUIDType => UUID.fromString(row(i).asInstanceOf[String])
+        case UUIDType => if (row(i) == null) { null } else { UUID.fromString(row(i).asInstanceOf[String]) }
         case InetType => InetAddress.getByName(row(i).asInstanceOf[String])
         case other: ColumnType[_] => other.converterToCassandra.convert(row(i))
       }
